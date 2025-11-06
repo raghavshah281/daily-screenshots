@@ -1,5 +1,8 @@
 name: Daily Full Page Screenshot
 
+permissions:
+  contents: write
+
 on:
   schedule:
     - cron: "0 5 * * *"   # Runs daily at 5:00 AM India time approx
