@@ -1,0 +1,46 @@
+name: Daily Full Page Screenshot
+
+on:
+  schedule:
+    - cron: "0 5 * * *"   # Runs daily at 5:00 AM India time approx
+  workflow_dispatch:       # Allows you to run manually
+
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install --with-deps
+
+      - name: Create screenshots folder
+        run: mkdir -p screenshots
+
+      - name: Take Screenshot
+        run: |
+          node - << 'EOF'
+          const { chromium } = require('playwright');
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+            await page.goto("https://www.notion.com/pricing", { waitUntil: "networkidle" });
+            const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+            await page.screenshot({ path: `screenshots/${timestamp}.png`, fullPage: true });
+            await browser.close();
+          })();
+          EOF
+
+      - name: Commit Screenshot to Repo
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Daily screenshot"
