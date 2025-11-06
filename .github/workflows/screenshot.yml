@@ -1,24 +1,27 @@
-name: Daily Full Page Screenshot
+name: Daily Full Page Screenshots
 
+# lets the workflow save images back to the repo
 permissions:
   contents: write
 
 on:
   schedule:
-    - cron: "0 5 * * *"   # Runs daily at 5:00 AM India time approx
-  workflow_dispatch:       # Allows you to run manually
+    - cron: "0 5 * * *"   # runs daily ~10:30 AM IST (GitHub cron is UTC)
+  workflow_dispatch:       # lets you run it manually
 
 jobs:
   screenshot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Install Playwright
         run: |
@@ -26,24 +29,69 @@ jobs:
           npm install playwright
           npx playwright install --with-deps
 
-      - name: Create screenshots folder
+      - name: Ensure screenshots folder exists
         run: mkdir -p screenshots
 
-      - name: Take Screenshot
+      - name: Take screenshots for each URL in urls.txt
         run: |
-          node - << 'EOF'
+          node - <<'EOF'
+          const fs = require('fs');
           const { chromium } = require('playwright');
+
+          // Read URLs from urls.txt (one per line)
+          const urls = fs.readFileSync('urls.txt','utf8')
+            .split(/\r?\n/)
+            .map(s => s.trim())
+            .filter(Boolean);
+
+          // Derive a tidy folder name from the domain (e.g., notion.com -> Notion)
+          function siteFolder(urlStr) {
+            const { hostname } = new URL(urlStr);
+            const parts = hostname.replace(/^www\./,'').split('.');
+            const sld = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+            return sld.charAt(0).toUpperCase() + sld.slice(1);
+          }
+
+          // Timestamp in IST for filenames
+          function istTimestamp() {
+            const now = new Date();
+            const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000); // UTC+5:30
+            const pad = n => String(n).padStart(2, '0');
+            const yyyy = ist.getUTCFullYear();
+            const mm = pad(ist.getUTCMonth() + 1);
+            const dd = pad(ist.getUTCDate());
+            const hh = pad(ist.getUTCHours());
+            const mi = pad(ist.getUTCMinutes());
+            const ss = pad(ist.getUTCSeconds());
+            return `${yyyy}-${mm}-${dd}_${hh}-${mi}-${ss}_IST`;
+          }
+
           (async () => {
             const browser = await chromium.launch();
-            const page = await browser.newPage();
-            await page.goto("https://www.notion.com/pricing", { waitUntil: "networkidle" });
-            const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-            await page.screenshot({ path: `screenshots/${timestamp}.png`, fullPage: true });
+            const context = await browser.newContext({ viewport: { width: 1366, height: 768 } });
+
+            for (const url of urls) {
+              const folder = `screenshots/${siteFolder(url)}`;
+              fs.mkdirSync(folder, { recursive: true });
+              const page = await context.newPage();
+              try {
+                await page.goto(url, { waitUntil: 'networkidle', timeout: 180000 });
+                await page.waitForTimeout(2500); // let assets settle
+                const filename = `${istTimestamp()}.png`;
+                const outPath = `${folder}/${filename}`;
+                await page.screenshot({ path: outPath, fullPage: true });
+                console.log('Saved:', outPath);
+              } catch (e) {
+                console.error('Failed:', url, e.message);
+              } finally {
+                await page.close();
+              }
+            }
             await browser.close();
           })();
           EOF
 
-      - name: Commit Screenshot to Repo
+      - name: Commit screenshots
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Daily screenshot"
+          commit_message: "Daily screenshots"
