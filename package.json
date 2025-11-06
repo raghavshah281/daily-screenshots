@@ -8,8 +8,8 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "playwright": "^1.56.1"
-  }
+  },
+  "description": ""
 }
