@@ -174,7 +174,7 @@ jobs:
         with:
           commit_message: "Daily screenshots"
 
-      - name: Upload new screenshots to Google Drive (history, keep folders)
+      - name: Upload new screenshots to Google Drive (Shared Drive)
         if: ${{ always() }}
         env:
           DRIVE_SA_JSON: ${{ secrets.DRIVE_SA_JSON }}
@@ -190,18 +190,31 @@ jobs:
           const auth = new google.auth.JWT({
             email: creds.client_email,
             key: creds.private_key,
-            scopes: ['https://www.googleapis.com/auth/drive.file']
+            scopes: ['https://www.googleapis.com/auth/drive']
           });
           const drive = google.drive({version: 'v3', auth});
           const parent = process.env.DRIVE_PARENT_FOLDER_ID;
 
           async function ensureSubfolder(name) {
+            // Search/create under the given parent folder (works in Shared Drives)
             const q = `name='${name.replace(/'/g,"\\'")}' and '${parent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-            const list = await drive.files.list({ q, fields: 'files(id,name)' });
+            const list = await drive.files.list({
+              q,
+              fields: 'files(id,name)',
+              includeItemsFromAllDrives: true,
+              supportsAllDrives: true,
+              corpora: 'allDrives'
+            });
             if (list.data.files?.length) return list.data.files[0].id;
+
             const res = await drive.files.create({
-              requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parent] },
-              fields: 'id'
+              requestBody: {
+                name,
+                mimeType: 'application/vnd.google-apps.folder',
+                parents: [parent],
+              },
+              fields: 'id',
+              supportsAllDrives: true,
             });
             return res.data.id;
           }
@@ -209,10 +222,9 @@ jobs:
           (async () => {
             if (!fs.existsSync('newfiles.txt')) return;
             const lines = fs.readFileSync('newfiles.txt','utf8').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-            const cache = new Map(); // folderName -> folderId
+            const cache = new Map();
             for (const p of lines) {
               const parts = p.split(path.sep);
-              // expects screenshots/<SiteName>/<file>.png
               const folderName = parts.length >= 3 ? parts[1] : 'Misc';
               let folderId = cache.get(folderName);
               if (!folderId) {
@@ -222,7 +234,12 @@ jobs:
               const fileName = path.basename(p);
               const media = { mimeType: 'image/png', body: fs.createReadStream(p) };
               const fileMetadata = { name: fileName, parents: [folderId] };
-              const res = await drive.files.create({ requestBody: fileMetadata, media, fields: 'id,name,webViewLink' });
+              const res = await drive.files.create({
+                requestBody: fileMetadata,
+                media,
+                fields: 'id,name,webViewLink',
+                supportsAllDrives: true,
+              });
               console.log('Uploaded:', folderName + '/' + fileName, res.data.webViewLink);
             }
           })().catch(e => { console.error(e); process.exit(1); });
