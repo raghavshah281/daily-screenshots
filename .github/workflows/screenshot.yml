@@ -1,13 +1,12 @@
-name: Daily Full Page Screenshots
+name: Daily Full Page Screenshots + Google Drive
 
-# lets the workflow save images back to the repo
 permissions:
   contents: write
 
 on:
   schedule:
-    - cron: "0 5 * * *"   # runs daily ~10:30 AM IST (GitHub cron is UTC)
-  workflow_dispatch:       # lets you run it manually
+    - cron: "0 5 * * *"   # ~10:30 AM IST daily (GitHub cron is UTC)
+  workflow_dispatch:
 
 jobs:
   screenshot:
@@ -23,28 +22,34 @@ jobs:
         with:
           node-version: 20
 
+      # Speed up subsequent runs
+      - name: Restore npm cache
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
       - name: Install Playwright
         run: |
-          npm init -y
           npm install playwright
           npx playwright install --with-deps
 
-      - name: Ensure screenshots folder exists
-        run: mkdir -p screenshots
+      - name: Ensure folders & url list
+        run: |
+          mkdir -p screenshots
+          test -f urls.txt || (echo "Please add urls.txt to repo root" && exit 1)
 
-      - name: Take screenshots for each URL in urls.txt
+      - name: Take screenshots (robust, with retries & scrolling)
         run: |
           node - <<'EOF'
           const fs = require('fs');
+          const path = require('path');
           const { chromium } = require('playwright');
 
-          // Read URLs from urls.txt (one per line)
           const urls = fs.readFileSync('urls.txt','utf8')
-            .split(/\r?\n/)
-            .map(s => s.trim())
-            .filter(Boolean);
+            .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
-          // Derive a tidy folder name from the domain (e.g., notion.com -> Notion)
           function siteFolder(urlStr) {
             const { hostname } = new URL(urlStr);
             const parts = hostname.replace(/^www\./,'').split('.');
@@ -52,10 +57,9 @@ jobs:
             return sld.charAt(0).toUpperCase() + sld.slice(1);
           }
 
-          // Timestamp in IST for filenames
           function istTimestamp() {
             const now = new Date();
-            const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000); // UTC+5:30
+            const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
             const pad = n => String(n).padStart(2, '0');
             const yyyy = ist.getUTCFullYear();
             const mm = pad(ist.getUTCMonth() + 1);
@@ -66,32 +70,160 @@ jobs:
             return `${yyyy}-${mm}-${dd}_${hh}-${mi}-${ss}_IST`;
           }
 
+          async function clickConsentIfPresent(page) {
+            const selectors = [
+              'button:has-text("Accept all")',
+              'button:has-text("Accept All")',
+              'button:has-text("I agree")',
+              'button:has-text("Got it")',
+              '#onetrust-accept-btn-handler',
+              'button#onetrust-accept-btn-handler',
+              'button[aria-label="Accept cookies"]',
+            ];
+            for (const sel of selectors) {
+              const btn = await page.$(sel).catch(()=>null);
+              if (btn) { await btn.click().catch(()=>{}); break; }
+            }
+          }
+
+          async function smoothScroll(page) {
+            await page.evaluate(async () => {
+              await new Promise(resolve => {
+                const totalHeight = document.body.scrollHeight || document.documentElement.scrollHeight;
+                let scrolled = 0;
+                const step = Math.max(200, Math.floor(window.innerHeight * 0.6));
+                const timer = setInterval(() => {
+                  window.scrollBy(0, step);
+                  scrolled += step;
+                  if (scrolled >= totalHeight - window.innerHeight) {
+                    clearInterval(timer);
+                    resolve();
+                  }
+                }, 200);
+              });
+            });
+          }
+
+          async function tryCapture(context, url) {
+            const folder = path.join('screenshots', siteFolder(url));
+            fs.mkdirSync(folder, { recursive: true });
+            const filename = `${istTimestamp()}.png`;
+            const outPath = path.join(folder, filename);
+            const page = await context.newPage();
+
+            // Consistent environment
+            await context.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+            await page.emulateMedia({ colorScheme: 'light' });
+            await page.setViewportSize({ width: 1366, height: 768 });
+
+            const modes = [
+              { waitUntil: 'networkidle', timeout: 180000 },
+              { waitUntil: 'load',        timeout: 180000 },
+              { waitUntil: 'domcontentloaded', timeout: 180000 },
+            ];
+
+            try {
+              let success = false;
+              for (const m of modes) {
+                try {
+                  await page.goto(url, m);
+                  await clickConsentIfPresent(page);
+                  await page.waitForTimeout(2500);
+                  await smoothScroll(page);             // trigger lazy content
+                  await page.waitForTimeout(1000);
+                  await page.screenshot({ path: outPath, fullPage: true });
+                  success = true;
+                  break;
+                } catch (e) {
+                  // retry with next mode
+                }
+              }
+              if (!success) throw new Error('All wait modes failed');
+              console.log('Saved:', outPath);
+              fs.appendFileSync('newfiles.txt', outPath + '\n');
+            } catch (e) {
+              console.error('Failed:', url, e.message);
+            } finally {
+              await page.close();
+            }
+          }
+
           (async () => {
-            const browser = await chromium.launch();
-            const context = await browser.newContext({ viewport: { width: 1366, height: 768 } });
+            const browser = await chromium.launch({
+              args: ['--disable-dev-shm-usage', '--no-sandbox'],
+            });
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118 Safari/537.36',
+              timezoneId: 'Asia/Kolkata',
+              locale: 'en-US',
+            });
+
+            // fresh list of files for this run
+            fs.writeFileSync('newfiles.txt', '');
 
             for (const url of urls) {
-              const folder = `screenshots/${siteFolder(url)}`;
-              fs.mkdirSync(folder, { recursive: true });
-              const page = await context.newPage();
-              try {
-                await page.goto(url, { waitUntil: 'networkidle', timeout: 180000 });
-                await page.waitForTimeout(2500); // let assets settle
-                const filename = `${istTimestamp()}.png`;
-                const outPath = `${folder}/${filename}`;
-                await page.screenshot({ path: outPath, fullPage: true });
-                console.log('Saved:', outPath);
-              } catch (e) {
-                console.error('Failed:', url, e.message);
-              } finally {
-                await page.close();
-              }
+              await tryCapture(context, url);
             }
+
             await browser.close();
           })();
           EOF
 
-      - name: Commit screenshots
+      - name: Commit screenshots to repo (history)
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Daily screenshots"
+
+      - name: Upload new screenshots to Google Drive (history, keep folders)
+        if: ${{ always() }}
+        env:
+          DRIVE_SA_JSON: ${{ secrets.DRIVE_SA_JSON }}
+          DRIVE_PARENT_FOLDER_ID: ${{ secrets.DRIVE_PARENT_FOLDER_ID }}
+        run: |
+          npm install googleapis@131
+          node - <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+          const {google} = require('googleapis');
+
+          const creds = JSON.parse(process.env.DRIVE_SA_JSON);
+          const auth = new google.auth.JWT({
+            email: creds.client_email,
+            key: creds.private_key,
+            scopes: ['https://www.googleapis.com/auth/drive.file']
+          });
+          const drive = google.drive({version: 'v3', auth});
+          const parent = process.env.DRIVE_PARENT_FOLDER_ID;
+
+          async function ensureSubfolder(name) {
+            const q = `name='${name.replace(/'/g,"\\'")}' and '${parent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+            const list = await drive.files.list({ q, fields: 'files(id,name)' });
+            if (list.data.files?.length) return list.data.files[0].id;
+            const res = await drive.files.create({
+              requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parent] },
+              fields: 'id'
+            });
+            return res.data.id;
+          }
+
+          (async () => {
+            if (!fs.existsSync('newfiles.txt')) return;
+            const lines = fs.readFileSync('newfiles.txt','utf8').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+            const cache = new Map(); // folderName -> folderId
+            for (const p of lines) {
+              const parts = p.split(path.sep);
+              // expects screenshots/<SiteName>/<file>.png
+              const folderName = parts.length >= 3 ? parts[1] : 'Misc';
+              let folderId = cache.get(folderName);
+              if (!folderId) {
+                folderId = await ensureSubfolder(folderName);
+                cache.set(folderName, folderId);
+              }
+              const fileName = path.basename(p);
+              const media = { mimeType: 'image/png', body: fs.createReadStream(p) };
+              const fileMetadata = { name: fileName, parents: [folderId] };
+              const res = await drive.files.create({ requestBody: fileMetadata, media, fields: 'id,name,webViewLink' });
+              console.log('Uploaded:', folderName + '/' + fileName, res.data.webViewLink);
+            }
+          })().catch(e => { console.error(e); process.exit(1); });
+          EOF
