@@ -1,0 +1,11 @@
+screenshots/Monday/2025-11-07_05-51-36_IST.png
+screenshots/Notion/2025-11-07_05-51-48_IST.png
+screenshots/Asana/2025-11-07_05-51-57_IST.png
+screenshots/Atlassian/2025-11-07_05-55-06_IST.png
+screenshots/Trello/2025-11-07_05-58-46_IST.png
+screenshots/Slack/2025-11-07_05-59-25_IST.png
+screenshots/Microsoft/2025-11-07_05-59-30_IST.png
+screenshots/Smartsheet/2025-11-07_05-59-46_IST.png
+screenshots/Airtable/2025-11-07_06-00-29_IST.png
+screenshots/Basecamp/2025-11-07_06-00-39_IST.png
+screenshots/Todoist/2025-11-07_06-00-47_IST.png
