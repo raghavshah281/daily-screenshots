@@ -35,28 +35,42 @@ jobs:
           npm install playwright
           npx playwright install --with-deps
 
-      - name: Ensure folders & url list
+      - name: Ensure folders & URL list
         run: |
           mkdir -p screenshots
           test -f urls.txt || (echo "Please add urls.txt to repo root" && exit 1)
 
-      - name: Take screenshots (robust, with retries & scrolling)
+      - name: Take screenshots (supports '# FolderName' after URL)
         run: |
           node - <<'EOF'
           const fs = require('fs');
           const path = require('path');
           const { chromium } = require('playwright');
 
-          const urls = fs.readFileSync('urls.txt','utf8')
-            .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+          // --- Read and parse urls.txt ---
+          // Each line can be:  URL  or  URL # FolderName
+          const lines = fs.readFileSync('urls.txt','utf8')
+            .split(/\r?\n/)
+            .map(s => s.trim())
+            .filter(Boolean);
 
-          function siteFolder(urlStr) {
+          const entries = lines.map(line => {
+            const [urlPart, namePart] = line.split('#').map(s => s && s.trim());
+            const url = urlPart;
+            if (!url) return null;
+            const customName = namePart ? namePart.replace(/\s+/g, '') : null; // remove spaces
+            return { url, customName };
+          }).filter(Boolean);
+
+          // Fallback folder name from domain if no custom name given
+          function siteFolderFromDomain(urlStr) {
             const { hostname } = new URL(urlStr);
             const parts = hostname.replace(/^www\./,'').split('.');
             const sld = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
             return sld.charAt(0).toUpperCase() + sld.slice(1);
           }
 
+          // Timestamp in IST for filenames
           function istTimestamp() {
             const now = new Date();
             const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
@@ -81,8 +95,10 @@ jobs:
               'button[aria-label="Accept cookies"]',
             ];
             for (const sel of selectors) {
-              const btn = await page.$(sel).catch(()=>null);
-              if (btn) { await btn.click().catch(()=>{}); break; }
+              try {
+                const btn = await page.$(sel);
+                if (btn) { await btn.click().catch(()=>{}); break; }
+              } catch {}
             }
           }
 
@@ -104,8 +120,8 @@ jobs:
             });
           }
 
-          async function tryCapture(context, url) {
-            const folder = path.join('screenshots', siteFolder(url));
+          async function tryCapture(context, url, folderName) {
+            const folder = path.join('screenshots', folderName);
             fs.mkdirSync(folder, { recursive: true });
             const filename = `${istTimestamp()}.png`;
             const outPath = path.join(folder, filename);
@@ -135,7 +151,7 @@ jobs:
                   success = true;
                   break;
                 } catch (e) {
-                  // retry with next mode
+                  // try next mode
                 }
               }
               if (!success) throw new Error('All wait modes failed');
@@ -161,8 +177,9 @@ jobs:
             // fresh list of files for this run
             fs.writeFileSync('newfiles.txt', '');
 
-            for (const url of urls) {
-              await tryCapture(context, url);
+            for (const { url, customName } of entries) {
+              const folderName = customName || siteFolderFromDomain(url);
+              await tryCapture(context, url, folderName);
             }
 
             await browser.close();
@@ -225,6 +242,7 @@ jobs:
             const cache = new Map();
             for (const p of lines) {
               const parts = p.split(path.sep);
+              // expects screenshots/<FolderName>/<file>.png
               const folderName = parts.length >= 3 ? parts[1] : 'Misc';
               let folderId = cache.get(folderName);
               if (!folderId) {
